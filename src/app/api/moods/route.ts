@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/db";
+import { supabase } from "@/lib/supabase";
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -14,18 +14,27 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from");
   const to = searchParams.get("to");
 
-  const where: { userId: string; date?: { gte?: string; lte?: string } } = { userId };
-  if (from || to) {
-    where.date = {};
-    if (from) where.date.gte = from;
-    if (to) where.date.lte = to;
+  let query = supabase
+    .from("mood_entries")
+    .select("id, date, mood_value")
+    .eq("user_id", userId)
+    .order("date", { ascending: true });
+
+  if (from) query = query.gte("date", from);
+  if (to) query = query.lte("date", to);
+
+  const { data, error } = await query;
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const entries = await prisma.moodEntry.findMany({
-    where,
-    orderBy: { date: "asc" },
-    select: { id: true, date: true, moodValue: true },
-  });
+  // Map snake_case DB columns to camelCase for frontend compatibility
+  const entries = (data || []).map((row) => ({
+    id: row.id,
+    date: row.date,
+    moodValue: row.mood_value,
+  }));
 
   return NextResponse.json(entries);
 }
@@ -50,12 +59,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Cannot log mood for future dates" }, { status: 400 });
   }
 
-  const entry = await prisma.moodEntry.upsert({
-    where: { userId_date: { userId, date } },
-    update: { moodValue },
-    create: { userId, date, moodValue },
-    select: { id: true, date: true, moodValue: true },
-  });
+  // Upsert: insert or update on conflict (user_id, date)
+  const { data, error } = await supabase
+    .from("mood_entries")
+    .upsert(
+      {
+        user_id: userId,
+        date,
+        mood_value: moodValue,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,date" }
+    )
+    .select("id, date, mood_value")
+    .single();
 
-  return NextResponse.json(entry);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    id: data.id,
+    date: data.date,
+    moodValue: data.mood_value,
+  });
 }
