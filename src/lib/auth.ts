@@ -2,13 +2,40 @@ import { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import { supabase } from "./supabase";
 
+const missingEnvVars: string[] = [];
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    missingEnvVars.push(name);
+    console.error(
+      `[auth] Missing required environment variable: ${name}. ` +
+        `Copy .env.example to .env and fill in the values.`
+    );
+    return "";
+  }
+  return value;
+}
+
+const googleClientId = requireEnv("GOOGLE_CLIENT_ID");
+const googleClientSecret = requireEnv("GOOGLE_CLIENT_SECRET");
+
+if (missingEnvVars.length > 0) {
+  console.error(
+    `[auth] The following env vars are missing: ${missingEnvVars.join(", ")}. ` +
+      `Google sign-in will not work until they are configured.`
+  );
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: googleClientId,
+      clientSecret: googleClientSecret,
     }),
   ],
+  secret: process.env.NEXTAUTH_SECRET,
+  debug: process.env.NODE_ENV === "development",
   session: {
     strategy: "jwt",
   },
@@ -16,7 +43,7 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       // On initial sign-in, upsert user to Supabase
       if (user) {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("users")
           .upsert(
             {
@@ -28,6 +55,10 @@ export const authOptions: NextAuthOptions = {
           )
           .select("id")
           .single();
+
+        if (error) {
+          console.error("[auth] Supabase user upsert failed:", error.message);
+        }
 
         if (data) {
           token.supabaseUserId = data.id;
@@ -44,5 +75,6 @@ export const authOptions: NextAuthOptions = {
   },
   pages: {
     signIn: "/",
+    error: "/auth/error",
   },
 };
